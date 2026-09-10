@@ -3,6 +3,7 @@ import {
   pointInPolygon, polygonArea, polygonCentroid, polygonPerimeter, polygonContainsPolygon, snap, toMeters, uid,
 } from './lib/geometry.js';
 import { loadCurrent, loadPrefs, loadProjects, saveCurrent, savePrefs, saveProjects } from './lib/storage.js';
+import { TEMPLATE_CATEGORIES, TEMPLATES } from './templates.js';
 
 const app = document.querySelector('#app');
 const CANVAS = { width: 1200, height: 820, originX: 100, originY: 90, pxPerMeter: 72 };
@@ -151,7 +152,7 @@ const state = {
   showGrid: prefs.showGrid ?? true, showDimensions: prefs.showDimensions ?? true, showArea: prefs.showArea ?? true,
   theme: prefs.theme || 'light', mode: 'select', zoom: 1,
   draftPoints: [], rectStart: null, pointer: null, selected: null, drag: null,
-  history: [], future: [], savedOpen: false, toast: null,
+  history: [], future: [], savedOpen: false, templateOpen: false, templateCategory: 'all', toast: null,
   doorPreset: .9, windowPreset: 1.2,
   wallAnchor: null, wallRoomSide: 'auto',
 };
@@ -193,7 +194,7 @@ function render() {
   <div class="app-shell">
     <header class="topbar">
       <button class="brand brand-button" data-action="new" title="새 도면 만들기"><span class="brand-mark"><span></span></span><span><strong>평수 도면 스튜디오</strong><small>외곽부터 정하고, 건축도처럼 편집하는 면적 계산기</small></span></button>
-      <nav class="top-actions" aria-label="주요 기능"><button class="nav-button active" data-action="mode" data-mode="select">설계하기</button><button class="nav-button" data-action="saved">${icon('folder')} 저장된 도면</button><button class="nav-button" data-action="guide">${icon('info')} 사용 가이드</button></nav>
+      <nav class="top-actions" aria-label="주요 기능"><button class="nav-button active" data-action="mode" data-mode="select">설계하기</button><button class="nav-button" data-action="templates">${icon('folder')} 기본 템플릿</button><button class="nav-button" data-action="saved">${icon('save')} 저장된 도면</button><button class="nav-button" data-action="guide">${icon('info')} 사용 가이드</button></nav>
       <div class="header-right"><button class="icon-button" data-action="theme" aria-label="테마 변경">${icon(state.theme === 'light' ? 'moon' : 'sun')}</button><button class="primary-button" data-action="save">${icon('save')} 내 도면 저장</button></div>
     </header>
     <main class="workspace">
@@ -217,10 +218,11 @@ function render() {
         <section><h2>공간별 면적</h2><div class="room-table">${m.roomData.length ? m.roomData.map(r => `<button class="${state.selected?.id === r.id ? 'active' : ''}" data-action="select-room" data-id="${r.id}"><span>${esc(r.name)}</span><strong>${num(r.area)} m² <small>(${num(r.area / PYEONG_M2)}평)</small></strong></button>`).join('') : '<div class="empty-state">아직 실내 공간이 없습니다.<br>외곽 틀 생성 후 공간을 추가하세요.</div>'}</div></section>
         ${(selectedRoom || selectedElement || selectedBoundary) ? `<section class="inspector-section"><div class="section-title-row"><h2>선택 요소 편집</h2>${selectedRoom || selectedElement ? `<button class="danger-icon" data-action="delete">${icon('trash')}</button>` : ''}</div>${selectedRoom ? roomInspector(selectedRoom) : selectedElement ? elementInspector(selectedElement) : boundaryInspector(selectedBoundary, state.selected.kind)}</section>` : ''}
         <section><h2>도면 정보</h2><label class="field"><span>도면 이름</span><input data-live="project-name" value="${esc(state.project.name)}"></label><label class="field"><span>설명</span><textarea data-live="project-description" rows="3">${esc(state.project.description)}</textarea></label><div class="metadata"><span>수정</span><b>${new Date(state.project.updatedAt).toLocaleString('ko-KR')}</b></div></section>
-        <section><h2>내보내기 · 백업</h2><div class="export-grid"><button data-action="export-png">${icon('download')} PNG</button><button data-action="export-svg">${icon('download')} SVG</button><button data-action="print">${icon('print')} PDF/인쇄</button><button data-action="export-json">${icon('download')} JSON 백업</button><button data-action="import-json">${icon('folder')} JSON 불러오기</button><button data-action="new">${icon('plus')} 새 도면</button></div><input id="json-file" type="file" accept="application/json,.json" hidden></section>
+        <section><h2>내보내기 · 백업</h2><div class="export-grid"><button data-action="export-png">${icon('download')} PNG</button><button data-action="export-svg">${icon('download')} SVG</button><button data-action="print">${icon('print')} PDF/인쇄</button><button data-action="export-json">${icon('download')} JSON 백업</button><button data-action="import-json">${icon('folder')} JSON 불러오기</button><button data-action="templates">${icon('folder')} 기본 템플릿</button><button data-action="new">${icon('plus')} 새 도면</button></div><input id="json-file" type="file" accept="application/json,.json" hidden></section>
       </aside>
     </main>
     ${state.savedOpen ? savedModal() : ''}
+    ${state.templateOpen ? templateModal() : ''}
     ${state.setupOpen ? setupModal() : ''}
     ${state.toast ? `<div class="toast ${state.toast.type}">${esc(state.toast.message)}</div>` : ''}
   </div>`;
@@ -244,7 +246,7 @@ function shapeFields(prefix) {
   return `<label class="field"><span>${cap} 모양</span><select data-frame-config="${prefix}Shape"><option value="rectangle" ${shape === 'rectangle' ? 'selected' : ''}>사각형</option><option value="l" ${shape === 'l' ? 'selected' : ''}>ㄱ자형</option><option value="u" ${shape === 'u' ? 'selected' : ''}>ㄷ자형</option><option value="trapezoid" ${shape === 'trapezoid' ? 'selected' : ''}>사다리꼴</option></select></label><div class="two-fields"><label class="field"><span>전체 가로 (${state.unit})</span><input data-frame-config="${prefix}Width" value="${roundedUnit(cfg[`${prefix}Width`])}" inputmode="decimal"></label><label class="field"><span>전체 세로 (${state.unit})</span><input data-frame-config="${prefix}Depth" value="${roundedUnit(cfg[`${prefix}Depth`])}" inputmode="decimal"></label></div>${extras}`;
 }
 function setupModal() {
-  return `<div class="modal-backdrop setup-backdrop"><div class="modal setup-modal" data-modal-stop><div class="modal-header"><div><h2>새 작업의 외부 틀을 먼저 정하세요</h2><p>작업 범위와 외곽 모양을 선택하고 실제 규격을 입력합니다.</p></div></div><div class="setup-body">${frameSetupForm('modal')}<div class="setup-actions"><button class="primary-button setup-submit" data-action="apply-frame">이 규격으로 도면 시작</button><button class="wide-button accent-outline" data-action="use-example">예시 도면으로 둘러보기</button></div></div></div></div>`;
+  return `<div class="modal-backdrop setup-backdrop"><div class="modal setup-modal" data-modal-stop><div class="modal-header"><div><h2>새 작업의 외부 틀을 먼저 정하세요</h2><p>작업 범위와 외곽 모양을 선택하고 실제 규격을 입력합니다.</p></div></div><div class="setup-body">${frameSetupForm('modal')}<div class="setup-actions"><button class="primary-button setup-submit" data-action="apply-frame">이 규격으로 도면 시작</button><button class="wide-button accent-outline" data-action="open-templates-setup">기본 템플릿에서 시작</button><button class="wide-button" data-action="use-example">예시 도면으로 둘러보기</button></div></div></div></div>`;
 }
 function resultSection(m) {
   const heroArea = state.project.scope === 'site-building' && state.project.site ? m.siteArea : m.buildingArea;
@@ -303,6 +305,32 @@ function boundaryInspector(item,kind) { const b=bounds(item.points),area=polygon
 function vertexTable(points,type,kind='') { return `<div class="vertex-table"><div class="vertex-head"><span>점</span><span>X (${state.unit})</span><span>Y (${state.unit})</span></div>${points.map((p,i) => `<div class="vertex-row"><b>${i+1}</b><input data-${type}-vertex-input="x" ${kind ? `data-kind="${kind}"` : ''} data-index="${i}" value="${roundedUnit(p.x)}"><input data-${type}-vertex-input="y" ${kind ? `data-kind="${kind}"` : ''} data-index="${i}" value="${roundedUnit(p.y)}"></div>`).join('')}</div>`; }
 function elementInspector(el) { return `<div class="inspector-stack"><label class="field"><span>요소 이름</span><input data-live="element-name" data-id="${el.id}" value="${esc(el.name)}"></label><label class="field"><span>폭 (${state.unit})</span><input data-element-field="width" inputmode="decimal" value="${roundedUnit(el.width)}"></label><label class="field"><span>회전</span><select data-element-field="rotation">${[0,90,180,270].map(v => `<option value="${v}" ${el.rotation===v?'selected':''}>${v}°</option>`).join('')}</select></label><div class="two-fields"><label class="field"><span>X (${state.unit})</span><input data-element-field="x" value="${roundedUnit(el.x)}"></label><label class="field"><span>Y (${state.unit})</span><input data-element-field="y" value="${roundedUnit(el.y)}"></label></div></div>`; }
 function savedModal() { const list=loadProjects(); return `<div class="modal-backdrop" data-action="close-saved"><div class="modal" data-modal-stop><div class="modal-header"><div><h2>저장된 도면</h2><p>이 브라우저에 저장된 프로젝트입니다.</p></div><button class="modal-close" data-action="close-saved">×</button></div><div class="saved-list">${list.length ? list.map(raw => { const item=normalizeProject(raw); return `<div class="saved-card"><div><strong>${esc(item.name||'이름 없는 도면')} ${state.project.id===item.id?'<small>현재</small>':''}</strong><span>${esc(item.description||'설명 없음')}</span><time>${new Date(item.updatedAt).toLocaleString('ko-KR')}</time></div><div><button class="small-button" data-action="load-saved" data-id="${item.id}">불러오기</button><button class="danger-icon" data-action="delete-saved" data-id="${item.id}">${icon('trash')}</button></div></div>`; }).join('') : '<div class="empty-state large">저장된 도면이 없습니다.<br>상단의 ‘내 도면 저장’을 누르면 여기에 보관됩니다.</div>'}</div></div></div>`; }
+function templateModal() {
+  const list = state.templateCategory === 'all' ? TEMPLATES : TEMPLATES.filter(t => t.category === state.templateCategory);
+  return `<div class="modal-backdrop" data-action="close-templates"><div class="modal template-modal" data-modal-stop><div class="modal-header"><div><h2>기본 템플릿 라이브러리</h2><p>용도와 규모에 가까운 기준안을 불러온 뒤 벽·방·문·창문을 자유롭게 편집하세요.</p></div><button class="modal-close" data-action="close-templates">×</button></div><div class="template-tabs">${TEMPLATE_CATEGORIES.map(c=>`<button class="${state.templateCategory===c.id?'active':''}" data-action="template-category" data-category="${c.id}">${c.label}</button>`).join('')}</div><div class="template-note">평수 표기는 편집 시작을 위한 대표 규모입니다. 법정 전용·공급·대지·건축면적을 확정하는 표준도면이 아니며 실제 설계·인허가 시에는 관련 기준을 별도로 확인해야 합니다.</div><div class="template-grid">${list.map(templateCard).join('')}</div></div></div>`;
+}
+function templateCard(t) {
+  const buildingArea=polygonArea(t.project.building?.points||[]), roomCount=t.project.rooms?.length||0;
+  return `<article class="template-card"><div class="template-preview">${templatePreview(t)}</div><div class="template-card-body"><div class="template-card-kicker"><span>${TEMPLATE_CATEGORIES.find(c=>c.id===t.category)?.label||t.category}</span><b>${t.nominalPyeong}평급</b></div><h3>${esc(t.title)}</h3><p>${esc(t.summary)}</p><div class="template-meta"><span>${num(buildingArea)} m² 외곽</span><span>공간 ${roomCount}개</span><span>${t.project.scope==='site-building'?'대지+건물':'건물형'}</span></div><button class="primary-button template-load" data-action="load-template" data-template-id="${t.id}">이 템플릿 불러와 편집</button></div></article>`;
+}
+function templatePreview(t) {
+  const groups=[t.project.site?.points,t.project.building?.points,...(t.project.rooms||[]).map(r=>r.points)].filter(Boolean), all=groups.flat(), b=bounds(all), w=220,h=126,pad=10;
+  const scale=Math.min((w-pad*2)/Math.max(b.width,.1),(h-pad*2)/Math.max(b.height,.1));
+  const tx=x=>pad+(x-b.minX)*scale, ty=y=>pad+(y-b.minY)*scale, pts=arr=>arr.map(p=>`${tx(p.x)},${ty(p.y)}`).join(' ');
+  const site=t.project.site?`<polygon class="tp-site" points="${pts(t.project.site.points)}"></polygon>`:'';
+  const building=t.project.building?`<polygon class="tp-building" points="${pts(t.project.building.points)}"></polygon>`:'';
+  const rooms=(t.project.rooms||[]).map(r=>`<polygon class="tp-room" points="${pts(r.points)}"></polygon>`).join('');
+  return `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${site}${building}${rooms}</svg>`;
+}
+function projectFromTemplate(t) {
+  const p=deepClone(t.project), now=new Date().toISOString();
+  p.id=uid('project'); p.createdAt=now; p.updatedAt=now; p.templateSource={id:t.id,title:t.title,category:t.category};
+  if(p.site)p.site.id=uid('boundary'); if(p.building)p.building.id=uid('boundary');
+  p.rooms=(p.rooms||[]).map(room=>({...room,id:uid('room')}));
+  p.elements=(p.elements||[]).map(item=>({...item,id:uid('el')}));
+  return normalizeProject(p);
+}
+
 
 function persist() { state.project.updatedAt = new Date().toISOString(); state.project.frameConfig = deepClone(state.frameDraft); saveCurrent(state.project); }
 function persistPrefs() { savePrefs({ unit:state.unit,gridSize:state.gridSize,showGrid:state.showGrid,showDimensions:state.showDimensions,showArea:state.showArea,theme:state.theme }); }
@@ -320,7 +348,12 @@ app.addEventListener('click', e => {
   else if(a==='set-scope'){state.frameDraft.scope=actionEl.dataset.scope;render();}
   else if(a==='apply-frame')applyFrame();
   else if(a==='use-example'){snapshot();state.project=seedProject();state.frameDraft=deepClone(state.project.frameConfig);state.selected=null;state.setupOpen=false;persist();fit();notify('건물 외곽이 포함된 예시 도면을 불러왔습니다.');}
-  else if(a==='saved'){state.savedOpen=true;render();}
+  else if(a==='templates'){state.templateOpen=true;state.savedOpen=false;render();}
+  else if(a==='open-templates-setup'){state.setupOpen=false;state.templateOpen=true;render();}
+  else if(a==='close-templates'){state.templateOpen=false;if(!state.project.building)state.setupOpen=true;render();}
+  else if(a==='template-category'){state.templateCategory=actionEl.dataset.category||'all';render();}
+  else if(a==='load-template'){const t=TEMPLATES.find(x=>x.id===actionEl.dataset.templateId);if(t){snapshot();state.project=projectFromTemplate(t);state.frameDraft=deepClone(state.project.frameConfig);state.selected=null;state.templateOpen=false;state.setupOpen=false;persist();fit();notify(`${t.title} 템플릿을 불러왔습니다. 이제 자유롭게 편집할 수 있습니다.`);}}
+  else if(a==='saved'){state.savedOpen=true;state.templateOpen=false;render();}
   else if(a==='close-saved'){state.savedOpen=false;render();}
   else if(a==='guide'){document.querySelector('#guide')?.scrollIntoView({behavior:'smooth'});}
   else if(a==='theme'){state.theme=state.theme==='light'?'dark':'light';document.documentElement.dataset.theme=state.theme;persistPrefs();render();}

@@ -3,7 +3,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 set "REPO=ko9ma7/pyeong-plan-studio"
-set "TAG=v1.1.0"
+set "TAG=v1.2.0"
 set "TMP=%TEMP%\pyeong-plan-studio-update-%RANDOM%-%RANDOM%"
 
 echo [CHECK] GitHub update %TAG%
@@ -31,7 +31,7 @@ if "%COUNT%"=="0" (
   echo [OK] No source changes to upload.
 ) else (
   echo [CHECK] Committing %COUNT% changed files
-  git commit -m "feat: add wall-based placement and improved zoom" || goto :fail
+  git commit -m "feat: add editable floor-plan template library" || goto :fail
   echo [CHECK] Pushing main
   git push origin main || goto :fail
   echo [OK] Source update pushed
@@ -46,7 +46,7 @@ for /f %%T in ('git tag -l "%TAG%"') do set "HAS_TAG=%%T"
 if not defined HAS_TAG (
   git tag "%TAG%"
   git push origin "%TAG%"
-  gh release create "%TAG%" -R "%REPO%" --title "%TAG%" --notes "Wall-based room/door/window placement and zoom improvements." >nul 2>&1
+  gh release create "%TAG%" -R "%REPO%" --title "%TAG%" --notes "Built-in editable apartment, house, factory and office template library." >nul 2>&1
 )
 
 echo.
