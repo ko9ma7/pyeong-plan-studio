@@ -1,0 +1,19 @@
+평수 도면 스튜디오 - GitHub 배포 시작 방법
+
+1) 이 파일이 들어 있는 전체 폴더를 ZIP에서 먼저 압축 해제하세요.
+2) github-bootstrap.cmd만 따로 다운로드해서 실행하지 마세요.
+3) 같은 폴더에 아래 항목이 보여야 합니다.
+   - index.html
+   - package.json
+   - src 폴더
+   - public 폴더
+   - .github 폴더
+   - github-bootstrap.cmd
+4) github-bootstrap.cmd를 실행하세요.
+5) Git 또는 GitHub CLI가 없으면 자동 설치하지 않고 즉시 종료합니다.
+6) 로그인 후 Repository 생성 → Push → Pages 배포까지 진행합니다.
+7) 문제가 생기면 같은 폴더의 github-bootstrap.log를 확인하세요.
+
+정상 완료 시 마지막에 아래 2개 주소가 출력됩니다.
+- Repository : https://github.com/사용자명/pyeong-plan-studio
+- Pages      : https://사용자명.github.io/pyeong-plan-studio/

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#f5f8fd"/>
+  <rect x="54" y="54" width="1092" height="522" rx="32" fill="#fff" stroke="#dce5f2"/>
+  <rect x="92" y="94" width="62" height="62" rx="16" fill="#155eef"/>
+  <path d="M103 124 123 108l20 16v23h-13v-15h-14v15h-13Z" fill="#fff"/>
+  <text x="176" y="128" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#172033">평수 도면 스튜디오</text>
+  <text x="176" y="163" font-family="Arial, sans-serif" font-size="19" fill="#687386">도면을 그리고, 면적과 평수를 바로 계산하세요</text>
+  <rect x="92" y="205" width="690" height="316" rx="18" fill="#fbfcfe" stroke="#dfe5ee"/>
+  <g transform="translate(145 250)"><path d="M0 0h210v130H0ZM210 0h165v130H210ZM0 130h150v110H0ZM150 130h300v110H150Z" fill="#fbf5ea" stroke="#2f3845" stroke-width="8"/><path d="M375 0h120v170H375Z" fill="#fbf5ea" stroke="#2f3845" stroke-width="8"/><path d="M450 170h45v70h-45Z" fill="#f3f5f8" stroke="#2f3845" stroke-width="8"/></g>
+  <rect x="822" y="205" width="284" height="144" rx="18" fill="#eaf1ff"/>
+  <text x="852" y="250" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#155eef">총 면적</text>
+  <text x="852" y="302" font-family="Arial, sans-serif" font-size="43" font-weight="700" fill="#155eef">70.00 m²</text>
+  <text x="852" y="331" font-family="Arial, sans-serif" font-size="23" font-weight="700" fill="#155eef">21.18평</text>
+  <rect x="822" y="372" width="284" height="149" rx="18" fill="#fff" stroke="#dfe5ee"/>
+  <text x="850" y="410" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#172033">mm · cm · m 단위 지원</text>
+  <text x="850" y="446" font-family="Arial, sans-serif" font-size="17" fill="#687386">다각형 / 사각형 편집</text>
+  <text x="850" y="478" font-family="Arial, sans-serif" font-size="17" fill="#687386">문 · 창문 배치 및 저장</text>
+</svg>

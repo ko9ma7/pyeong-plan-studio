@@ -1,0 +1,8 @@
+GitHub repository already exists but is empty?
+
+1. Keep the existing GitHub repository. Do not delete it.
+2. Use the FULL extracted project folder from this package.
+3. Double-click github-bootstrap.cmd.
+4. This package uses ONE pure CMD file only. No PowerShell helper is used.
+5. The CMD creates/uses a .git folder inside floorplan-calculator only.
+6. It commits and pushes project files, updates GitHub About metadata, enables Pages, watches deployment, and creates v1.0.0 if missing.
