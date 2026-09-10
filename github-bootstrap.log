@@ -1,0 +1,36 @@
+[2026-09-10 14:26:12.74] Bootstrap started
+[2026-09-10 14:26:12.74] [CHECK] Starting GitHub bootstrap
+[2026-09-10 14:26:12.75] [CHECK] Checking project files
+[2026-09-10 14:26:12.76] [OK] Project files look complete
+[2026-09-10 14:26:12.76] [CHECK] Checking Git
+[2026-09-10 14:26:12.89] [OK] git version 2.54.0.windows.1
+[2026-09-10 14:26:12.90] [CHECK] Checking GitHub CLI
+[2026-09-10 14:26:13.04] [OK] gh version 2.96.0 (2026-07-02)
+[2026-09-10 14:26:13.05] [CHECK] Checking GitHub login
+[2026-09-10 14:26:13.94] [OK] Logged in as ko9ma7
+[2026-09-10 14:26:14.18] [OK] Target repository: ko9ma7/pyeong-plan-studio
+[2026-09-10 14:26:14.19] [CHECK] Preparing project-local Git repository
+Initialized empty Git repository in C:/Users/kohojung/Downloads/pyeong-plan-studio-cmd-only/pyeong-plan-studio-cmd-only/floorplan-calculator/.git/
+[2026-09-10 14:26:14.28] [OK] Created a local Git repository in this folder
+[2026-09-10 14:26:14.38] [OK] Git root is safely isolated to this project folder
+[2026-09-10 14:26:14.56] [OK] Git identity is configured
+[2026-09-10 14:26:14.64] [CHECK] Running local build
+[2026-09-10 14:26:15.19] [OK] Local build passed
+[2026-09-10 14:26:15.19] [CHECK] Checking GitHub repository ko9ma7/pyeong-plan-studio
+[2026-09-10 14:26:15.62] [OK] Repository already exists
+[2026-09-10 14:26:15.62] [CHECK] Configuring origin remote
+[2026-09-10 14:26:15.71] [OK] origin = https://github.com/ko9ma7/pyeong-plan-studio.git
+[2026-09-10 14:26:15.72] [CHECK] Staging project files
+[2026-09-10 14:26:16.19] [OK] Staged 34 project files
+[2026-09-10 14:26:16.43] [OK] Commit created
+[2026-09-10 14:26:16.44] [CHECK] Pushing main branch to GitHub
+[2026-09-10 14:26:18.55] [OK] Source uploaded: https://github.com/ko9ma7/pyeong-plan-studio
+[2026-09-10 14:26:18.56] [CHECK] Updating GitHub About metadata
+[2026-09-10 14:26:24.53] [OK] About metadata step completed
+[2026-09-10 14:26:24.54] [CHECK] Enabling GitHub Pages with Actions
+[2026-09-10 14:26:25.49] [OK] GitHub Pages is configured
+[2026-09-10 14:26:25.50] [CHECK] Starting deployment workflow
+[2026-09-10 14:26:33.05] [CHECK] Watching GitHub Actions run 34441071644
+[2026-09-10 14:27:05.36] [OK] Deployment succeeded: https://ko9ma7.github.io/pyeong-plan-studio/
+[2026-09-10 14:27:05.37] [CHECK] Checking initial release v1.0.0
+[2026-09-10 14:27:08.96] [OK] Bootstrap completed
