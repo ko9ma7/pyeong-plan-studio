@@ -1,11 +1,17 @@
 import {
   PYEONG_M2, UNIT_META, bounds, deepClone, distance, formatLength, fromMeters,
-  polygonArea, polygonCentroid, polygonPerimeter, polygonContainsPolygon, snap, toMeters, uid,
+  pointInPolygon, polygonArea, polygonCentroid, polygonPerimeter, polygonContainsPolygon, snap, toMeters, uid,
 } from './lib/geometry.js';
 import { loadCurrent, loadPrefs, loadProjects, saveCurrent, savePrefs, saveProjects } from './lib/storage.js';
 
 const app = document.querySelector('#app');
 const CANVAS = { width: 1200, height: 820, originX: 100, originY: 90, pxPerMeter: 72 };
+const ZOOM = { min: 0.02, max: 4 };
+function clampZoom(value) { return Math.min(ZOOM.max, Math.max(ZOOM.min, value)); }
+function zoomDelta(current, direction) {
+  const step = current < 0.2 ? 0.02 : current < 0.5 ? 0.05 : current < 1.5 ? 0.1 : 0.25;
+  return clampZoom(+(current + step * direction).toFixed(3));
+}
 const prefs = loadPrefs();
 
 const defaultFrameConfig = () => ({
@@ -46,6 +52,51 @@ function shapePoints(shape, cfg, prefix, origin = { x: 0, y: 0 }) {
     return [{x:ox+inset,y:oy},{x:ox+inset+top,y:oy},{x:ox+w,y:oy+d},{x:ox,y:oy+d}];
   }
   return [{x:ox,y:oy},{x:ox+w,y:oy},{x:ox+w,y:oy+d},{x:ox,y:oy+d}];
+}
+
+function projectToSegment(point, a, b) {
+  const dx=b.x-a.x, dy=b.y-a.y, lenSq=dx*dx+dy*dy || 1;
+  const t=Math.max(0,Math.min(1,((point.x-a.x)*dx+(point.y-a.y)*dy)/lenSq));
+  const projected={x:a.x+dx*t,y:a.y+dy*t};
+  return { point:projected, t, distance:distance(point,projected) };
+}
+function wallSegments() {
+  const out=[];
+  const add=(sourceType,sourceId,points,label)=>{
+    if(!points?.length)return;
+    points.forEach((a,i)=>{const b=points[(i+1)%points.length];out.push({key:`${sourceType}:${sourceId||''}:${i}`,sourceType,sourceId,index:i,a,b,label,length:distance(a,b)});});
+  };
+  if(state.project.building)add('building','building',state.project.building.points,'건물 외벽');
+  state.project.rooms.forEach(r=>add('room',r.id,r.points,r.name));
+  return out;
+}
+function wallByKey(key){ return wallSegments().find(w=>w.key===key) || null; }
+function nearestWall(point, maxDistance=null) {
+  let best=null;
+  for(const wall of wallSegments()){const hit=projectToSegment(point,wall.a,wall.b);if(!best||hit.distance<best.distance)best={...hit,wall};}
+  const autoLimit=Math.max(.15,Math.min(2,16/(CANVAS.pxPerMeter*state.zoom)));
+  return best && best.distance <= (maxDistance ?? autoLimit) ? best : null;
+}
+function wallAngle(wall){ return Math.atan2(wall.b.y-wall.a.y,wall.b.x-wall.a.x)*180/Math.PI; }
+function wallRoomCandidate(wall,lengthValue,depthValue,offsetValue,side){
+  const len=Math.max(.01,wall.length), ux=(wall.b.x-wall.a.x)/len, uy=(wall.b.y-wall.a.y)/len;
+  const nx=-uy, ny=ux, usable=Math.max(0,len-lengthValue), offset=Math.max(0,Math.min(usable,offsetValue));
+  const s={x:wall.a.x+ux*offset,y:wall.a.y+uy*offset};
+  const e={x:s.x+ux*lengthValue,y:s.y+uy*lengthValue};
+  const sign=side==='right'?-1:1;
+  return [s,e,{x:e.x+nx*depthValue*sign,y:e.y+ny*depthValue*sign},{x:s.x+nx*depthValue*sign,y:s.y+ny*depthValue*sign}];
+}
+function chooseAutoWallRoom(wall,lengthValue,depthValue,offsetValue){
+  const left=wallRoomCandidate(wall,lengthValue,depthValue,offsetValue,'left');
+  const right=wallRoomCandidate(wall,lengthValue,depthValue,offsetValue,'right');
+  if(!state.project.building)return left;
+  const li=polygonContainsPolygon(state.project.building.points,left),ri=polygonContainsPolygon(state.project.building.points,right);
+  if(li&&!ri)return left;if(ri&&!li)return right;
+  if(li&&ri){
+    const overlapScore=pts=>{const c=polygonCentroid(pts);return state.project.rooms.reduce((n,r)=>n+(pointInPolygon(c,r.points)?1:0),0);};
+    return overlapScore(left)<=overlapScore(right)?left:right;
+  }
+  return null;
 }
 
 function seedProject() {
@@ -102,6 +153,7 @@ const state = {
   draftPoints: [], rectStart: null, pointer: null, selected: null, drag: null,
   history: [], future: [], savedOpen: false, toast: null,
   doorPreset: .9, windowPreset: 1.2,
+  wallAnchor: null, wallRoomSide: 'auto',
 };
 
 document.documentElement.dataset.theme = state.theme;
@@ -148,10 +200,10 @@ function render() {
       <aside class="left-panel panel-scroll">
         ${frameSetupSection()}
         <section><h2>실내 그리기 도구</h2><div class="tool-grid">
-          ${[['select','↖','선택'],['rectangle','▭','사각형'],['polygon','⬠','다각형']].map(([mode,glyph,label]) => `<button class="tool-button ${state.mode === mode ? 'selected' : ''}" data-action="mode" data-mode="${mode}"><span class="tool-icon">${glyph}</span>${label}</button>`).join('')}
-        </div>${state.mode === 'polygon' ? `<div class="context-note">점을 순서대로 찍고 첫 점을 다시 누르거나 완료 버튼을 누르세요.${state.draftPoints.length > 2 ? '<button class="mini-primary" data-action="finish-polygon">다각형 완료</button>' : ''}</div>` : ''}</section>
+          ${[['select','↖','선택'],['rectangle','▭','사각형'],['polygon','⬠','다각형'],['wall-room','╫','벽 기준']].map(([mode,glyph,label]) => `<button class="tool-button ${state.mode === mode ? 'selected' : ''}" data-action="mode" data-mode="${mode}"><span class="tool-icon">${glyph}</span>${label}</button>`).join('')}
+        </div>${state.mode === 'polygon' ? `<div class="context-note">점을 순서대로 찍고 첫 점을 다시 누르거나 완료 버튼을 누르세요.${state.draftPoints.length > 2 ? '<button class="mini-primary" data-action="finish-polygon">다각형 완료</button>' : ''}</div>` : ''}${state.mode === 'wall-room' ? wallRoomPanel() : ''}</section>
         <section><h2>치수로 실내 공간 추가</h2><label class="field"><span>공간 이름</span><input id="quick-name" value="새 공간"></label><div class="two-fields"><label class="field"><span>가로 (${state.unit})</span><input id="quick-width" inputmode="decimal" value="${state.unit === 'm' ? '4' : state.unit === 'cm' ? '400' : '4000'}"></label><label class="field"><span>세로 (${state.unit})</span><input id="quick-height" inputmode="decimal" value="${state.unit === 'm' ? '3' : state.unit === 'cm' ? '300' : '3000'}"></label></div><button class="wide-button accent-outline" data-action="add-quick">${icon('plus')} 입력 크기로 추가</button></section>
-        <section><h2>건축 요소 추가</h2><div class="element-cards"><button class="${state.mode === 'door' ? 'selected' : ''}" data-action="mode" data-mode="door"><span class="door-glyph"></span>여닫이문</button><button class="${state.mode === 'sliding' ? 'selected' : ''}" data-action="mode" data-mode="sliding"><span class="sliding-glyph"></span>미닫이문</button><button class="${state.mode === 'window' ? 'selected' : ''}" data-action="mode" data-mode="window"><span class="window-glyph"></span>창문</button></div><label class="field"><span>문 기본 폭</span><select data-setting="doorPreset">${[.7,.8,.9,1,1.2].map(v => `<option value="${v}" ${state.doorPreset === v ? 'selected' : ''}>${v * 1000} mm</option>`).join('')}</select></label><label class="field"><span>창문 기본 폭</span><select data-setting="windowPreset">${[.9,1.2,1.5,1.8,2.4].map(v => `<option value="${v}" ${state.windowPreset === v ? 'selected' : ''}>${v * 1000} mm</option>`).join('')}</select></label></section>
+        <section><h2>건축 요소 추가</h2><div class="context-note compact">문·미닫이문·창문은 빈 공간이 아니라 <b>가장 가까운 벽에 자동 스냅</b>되어 벽 방향으로 회전합니다.</div><div class="element-cards"><button class="${state.mode === 'door' ? 'selected' : ''}" data-action="mode" data-mode="door"><span class="door-glyph"></span>여닫이문</button><button class="${state.mode === 'sliding' ? 'selected' : ''}" data-action="mode" data-mode="sliding"><span class="sliding-glyph"></span>미닫이문</button><button class="${state.mode === 'window' ? 'selected' : ''}" data-action="mode" data-mode="window"><span class="window-glyph"></span>창문</button></div><label class="field"><span>문 기본 폭</span><select data-setting="doorPreset">${[.7,.8,.9,1,1.2].map(v => `<option value="${v}" ${state.doorPreset === v ? 'selected' : ''}>${v * 1000} mm</option>`).join('')}</select></label><label class="field"><span>창문 기본 폭</span><select data-setting="windowPreset">${[.9,1.2,1.5,1.8,2.4].map(v => `<option value="${v}" ${state.windowPreset === v ? 'selected' : ''}>${v * 1000} mm</option>`).join('')}</select></label></section>
         <section><h2>도면 설정</h2><label class="field"><span>입력 / 표시 단위</span><select data-setting="unit">${Object.entries(UNIT_META).map(([k,v]) => `<option value="${k}" ${state.unit === k ? 'selected' : ''}>${v.label}</option>`).join('')}</select></label><label class="field"><span>스냅 그리드</span><select data-setting="gridSize">${[.05,.1,.25,.5,1].map(v => `<option value="${v}" ${state.gridSize === v ? 'selected' : ''}>${v.toFixed(2)} m</option>`).join('')}</select></label>${toggle('showGrid','그리드 표시')}${toggle('showDimensions','치수 표시')}${toggle('showArea','면적 표시')}</section>
       </aside>
       <section class="canvas-panel">
@@ -207,7 +259,7 @@ function boundaryListButton(kind, item, area) {
 }
 function shapeLabel(shape) { return ({ rectangle:'사각형', l:'ㄱ자형', u:'ㄷ자형', trapezoid:'사다리꼴', custom:'사용자 편집' })[shape] || '다각형'; }
 function toggle(key, label) { return `<label class="toggle-row"><input type="checkbox" data-setting="${key}" ${state[key] ? 'checked' : ''}><span class="fake-check"></span>${label}</label>`; }
-function modeText() { return state.mode === 'select' ? '선택 · 이동 · 꼭짓점 편집' : state.mode === 'polygon' ? '실내 다각형 그리기' : state.mode === 'rectangle' ? '실내 사각형 드래그' : state.mode === 'door' ? '여닫이문 배치' : state.mode === 'sliding' ? '미닫이문 배치' : '창문 배치'; }
+function modeText() { return state.mode === 'select' ? '선택 · 이동 · 꼭짓점 편집' : state.mode === 'polygon' ? '실내 다각형 그리기' : state.mode === 'rectangle' ? '실내 사각형 드래그' : state.mode === 'wall-room' ? '벽을 클릭해 기준 벽 선택' : state.mode === 'door' ? '벽을 클릭해 여닫이문 배치' : state.mode === 'sliding' ? '벽을 클릭해 미닫이문 배치' : '벽을 클릭해 창문 배치'; }
 
 function renderSvg() {
   const scale = CANVAS.pxPerMeter * state.zoom; const gridPx = Math.max(state.gridSize * scale, 4);
@@ -229,9 +281,18 @@ function renderSvg() {
     return `<g><polygon class="room-shape ${selected ? 'is-selected' : ''}" points="${pts}" data-room-id="${r.id}"></polygon>${dims}<g class="room-label" pointer-events="none"><text x="${c.x}" y="${c.y - (state.showArea ? 4 : 0)}">${esc(r.name)}</text>${state.showArea ? `<text class="room-area" x="${c.x}" y="${c.y + 20}">${num(area)} m² · ${num(area/PYEONG_M2)}평</text>` : ''}</g>${handles}</g>`;
   }).join('');
   const elements = state.project.elements.map(el => architecturalElement(el,toScreen(el),scale)).join('');
+  const wallGuide = ['wall-room','door','sliding','window'].includes(state.mode) ? renderWallGuides() : '';
   const draft = state.draftPoints.length ? `<g class="draft-layer"><polyline points="${[...state.draftPoints,state.pointer].filter(Boolean).map(p => { const q=toScreen(p); return `${q.x},${q.y}`; }).join(' ')}"></polyline>${state.draftPoints.map((p,i) => { const q=toScreen(p); return `<circle cx="${q.x}" cy="${q.y}" r="${i === 0 ? 8 : 6}"></circle>`; }).join('')}</g>` : '';
   let rect = ''; if (state.rectStart && state.pointer) { const a=toScreen(state.rectStart),b=toScreen(state.pointer); rect=`<rect class="rect-preview" x="${Math.min(a.x,b.x)}" y="${Math.min(a.y,b.y)}" width="${Math.abs(a.x-b.x)}" height="${Math.abs(a.y-b.y)}"></rect>`; }
-  return `<svg id="drawing-svg" class="drawing-canvas mode-${state.mode}" viewBox="0 0 ${CANVAS.width} ${CANVAS.height}" aria-label="도면 편집 캔버스" role="application"><defs><pattern id="grid-small" width="${gridPx}" height="${gridPx}" patternUnits="userSpaceOnUse"><path d="M ${gridPx} 0 L 0 0 0 ${gridPx}" fill="none" class="grid-minor"></path></pattern><pattern id="grid-major" width="${Math.max(gridPx*5,20)}" height="${Math.max(gridPx*5,20)}" patternUnits="userSpaceOnUse"><rect width="100%" height="100%" fill="url(#grid-small)"></rect><path d="M ${Math.max(gridPx*5,20)} 0 L 0 0 0 ${Math.max(gridPx*5,20)}" fill="none" class="grid-major"></path></pattern></defs><rect width="100%" height="100%" class="canvas-background"></rect>${state.showGrid ? '<rect width="100%" height="100%" fill="url(#grid-major)"></rect>' : ''}${boundaryHtml}${roomHtml}${elements}${draft}${rect}</svg>`;
+  return `<svg id="drawing-svg" class="drawing-canvas mode-${state.mode}" viewBox="0 0 ${CANVAS.width} ${CANVAS.height}" aria-label="도면 편집 캔버스" role="application"><defs><pattern id="grid-small" width="${gridPx}" height="${gridPx}" patternUnits="userSpaceOnUse"><path d="M ${gridPx} 0 L 0 0 0 ${gridPx}" fill="none" class="grid-minor"></path></pattern><pattern id="grid-major" width="${Math.max(gridPx*5,20)}" height="${Math.max(gridPx*5,20)}" patternUnits="userSpaceOnUse"><rect width="100%" height="100%" fill="url(#grid-small)"></rect><path d="M ${Math.max(gridPx*5,20)} 0 L 0 0 0 ${Math.max(gridPx*5,20)}" fill="none" class="grid-major"></path></pattern></defs><rect width="100%" height="100%" class="canvas-background"></rect>${state.showGrid ? '<rect width="100%" height="100%" fill="url(#grid-major)"></rect>' : ''}${boundaryHtml}${roomHtml}${elements}${wallGuide}${draft}${rect}</svg>`;
+}
+
+function wallRoomPanel(){
+  const wall=state.wallAnchor?wallByKey(state.wallAnchor):null;
+  return `<div class="wall-room-panel"><div class="context-note"><b>${wall?`기준 벽: ${esc(wall.label)} · ${formatLength(wall.length,state.unit,true)}`:'도면에서 기준이 될 벽을 먼저 클릭하세요.'}</b><br>선택한 벽의 시작점에서 거리와 방 길이·깊이를 입력해 벽에 정확히 붙여 생성합니다.</div><label class="field"><span>공간 이름</span><input id="wall-room-name" value="새 공간"></label><div class="two-fields"><label class="field"><span>벽을 따라 길이 (${state.unit})</span><input id="wall-room-length" value="${state.unit==='m'?'4':state.unit==='cm'?'400':'4000'}"></label><label class="field"><span>벽에서 깊이 (${state.unit})</span><input id="wall-room-depth" value="${state.unit==='m'?'3':state.unit==='cm'?'300':'3000'}"></label></div><div class="two-fields"><label class="field"><span>벽 시작점에서 (${state.unit})</span><input id="wall-room-offset" value="0"></label><label class="field"><span>생성 방향</span><select id="wall-room-side"><option value="auto" ${state.wallRoomSide==='auto'?'selected':''}>건물 안쪽 자동</option><option value="left" ${state.wallRoomSide==='left'?'selected':''}>벽 진행방향 왼쪽</option><option value="right" ${state.wallRoomSide==='right'?'selected':''}>벽 진행방향 오른쪽</option></select></label></div><button class="wide-button accent-outline" data-action="add-wall-room" ${wall?'':'disabled'}>${icon('plus')} 선택 벽 기준으로 공간 생성</button></div>`;
+}
+function renderWallGuides(){
+  return `<g class="wall-guide-layer">${wallSegments().map(w=>{const a=toScreen(w.a),b=toScreen(w.b),active=state.wallAnchor===w.key;return `<line class="wall-guide-hit ${active?'active':''}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" data-wall-key="${w.key}"></line><line class="wall-guide-visible ${active?'active':''}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"></line>`;}).join('')}</g>`;
 }
 
 function dimension(a,b,label,extraClass='') { const mx=(a.x+b.x)/2,my=(a.y+b.y)/2,angle=Math.atan2(b.y-a.y,b.x-a.x)*180/Math.PI,norm=angle>90||angle<-90?angle+180:angle,len=Math.hypot(b.x-a.x,b.y-a.y); if(len<42)return''; const w=Math.max(56,label.length*6.8); return `<g class="dimension ${extraClass}" pointer-events="none"><line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"></line><g transform="translate(${mx} ${my}) rotate(${norm})"><rect x="${-w/2}" y="-12" width="${w}" height="22" rx="5"></rect><text x="0" y="4">${esc(label)}</text></g></g>`; }
@@ -254,7 +315,7 @@ function screenToModel(event) { const svg=document.querySelector('#drawing-svg')
 app.addEventListener('click', e => {
   const modal=e.target.closest('[data-modal-stop]'); if(modal)e.stopPropagation();
   const actionEl=e.target.closest('[data-action]'); if(!actionEl)return; const a=actionEl.dataset.action;
-  if(a==='mode'){state.mode=actionEl.dataset.mode;state.draftPoints=[];state.rectStart=null;render();}
+  if(a==='mode'){state.mode=actionEl.dataset.mode;state.draftPoints=[];state.rectStart=null;if(state.mode!=='wall-room')state.wallAnchor=null;render();}
   else if(a==='new'){snapshot();state.project=blankProject();state.frameDraft=deepClone(state.project.frameConfig);state.selected=null;state.setupOpen=true;persist();render();}
   else if(a==='set-scope'){state.frameDraft.scope=actionEl.dataset.scope;render();}
   else if(a==='apply-frame')applyFrame();
@@ -264,8 +325,8 @@ app.addEventListener('click', e => {
   else if(a==='guide'){document.querySelector('#guide')?.scrollIntoView({behavior:'smooth'});}
   else if(a==='theme'){state.theme=state.theme==='light'?'dark':'light';document.documentElement.dataset.theme=state.theme;persistPrefs();render();}
   else if(a==='save')saveNamed(); else if(a==='undo')undo(); else if(a==='redo')redo();
-  else if(a==='zoom-in'){state.zoom=Math.min(2,+(state.zoom+.1).toFixed(2));render();} else if(a==='zoom-out'){state.zoom=Math.max(.25,+(state.zoom-.1).toFixed(2));render();}
-  else if(a==='fit')fit(); else if(a==='finish-polygon')finishPolygon(); else if(a==='add-quick')addQuick();
+  else if(a==='zoom-in'){state.zoom=zoomDelta(state.zoom,1);render();} else if(a==='zoom-out'){state.zoom=zoomDelta(state.zoom,-1);render();}
+  else if(a==='fit')fit(); else if(a==='finish-polygon')finishPolygon(); else if(a==='add-quick')addQuick(); else if(a==='add-wall-room')addWallRoom();
   else if(a==='select-room'){state.selected={type:'room',id:actionEl.dataset.id};state.mode='select';render();}
   else if(a==='select-boundary'){state.selected={type:'boundary',kind:actionEl.dataset.kind};state.mode='select';render();}
   else if(a==='delete')deleteSelected(); else if(a==='load-saved')loadSavedProject(actionEl.dataset.id); else if(a==='delete-saved')deleteSavedProject(actionEl.dataset.id);
@@ -277,6 +338,7 @@ app.addEventListener('change', e => {
   if(setting){ if(['gridSize','doorPreset','windowPreset'].includes(setting))state[setting]=Number(e.target.value); else if(['showGrid','showDimensions','showArea'].includes(setting))state[setting]=e.target.checked; else state[setting]=e.target.value; persistPrefs(); render(); return; }
   if(e.target.dataset.frameConfig){ updateFrameDraft(e.target); if(e.target.tagName==='SELECT')render(); return; }
   if(e.target.id==='json-file')importJson(e.target.files?.[0]);
+  if(e.target.id==='wall-room-side'){state.wallRoomSide=e.target.value;render();return;}
   if(e.target.dataset.roomVertexInput){const r=state.project.rooms.find(x=>x.id===state.selected?.id);if(!r)return;const idx=Number(e.target.dataset.index),axis=e.target.dataset.roomVertexInput,value=toMeters(e.target.value,state.unit);if(!Number.isFinite(value))return;commitQuiet(p=>({...p,rooms:p.rooms.map(x=>x.id===r.id?{...x,points:x.points.map((pt,i)=>i===idx?{...pt,[axis]:value}:pt)}:x)}));}
   if(e.target.dataset.boundaryVertexInput){const kind=e.target.dataset.kind,item=state.project[kind];if(!item)return;const idx=Number(e.target.dataset.index),axis=e.target.dataset.boundaryVertexInput,value=toMeters(e.target.value,state.unit);if(!Number.isFinite(value))return;commitQuiet(p=>({...p,[kind]:{...p[kind],shape:'custom',points:p[kind].points.map((pt,i)=>i===idx?{...pt,[axis]:value}:pt)}}));}
   if(e.target.dataset.elementField){const el=state.project.elements.find(x=>x.id===state.selected?.id);if(!el)return;const key=e.target.dataset.elementField;let value=key==='rotation'?Number(e.target.value):toMeters(e.target.value,state.unit);if(key==='width')value=Math.max(.1,value);commitQuiet(p=>({...p,elements:p.elements.map(x=>x.id===el.id?{...x,[key]:value}:x)}));}
@@ -291,8 +353,18 @@ app.addEventListener('input', e => {
 });
 function updateFrameDraft(target){const key=target.dataset.frameConfig;if(!key)return;if(key.endsWith('Shape'))state.frameDraft[key]=target.value;else state.frameDraft[key]=toMeters(target.value,state.unit);}
 
+app.addEventListener('wheel', e => {
+  const svg=e.target.closest?.('#drawing-svg');
+  if(!svg)return;
+  e.preventDefault();
+  state.zoom=zoomDelta(state.zoom,e.deltaY<0?1:-1);
+  render();
+},{passive:false});
+
 app.addEventListener('pointerdown', e => {
   const svg=e.target.closest('#drawing-svg'); if(!svg)return; const model=screenToModel(e);state.pointer=model;
+  const wallHit=e.target.closest('[data-wall-key]');
+  if(wallHit&&state.mode==='wall-room'){state.wallAnchor=wallHit.dataset.wallKey;render();return;}
   const bvh=e.target.closest('[data-vertex-boundary]'); if(bvh&&state.mode==='select'){e.stopPropagation();const kind=bvh.dataset.vertexBoundary,item=state.project[kind];state.selected={type:'boundary',kind};state.drag={type:'boundary-vertex',kind,index:Number(bvh.dataset.vertexIndex),start:model,original:deepClone(item.points),snapshot:deepClone(state.project)};return;}
   const vh=e.target.closest('[data-vertex-room]'); if(vh&&state.mode==='select'){e.stopPropagation();const r=state.project.rooms.find(x=>x.id===vh.dataset.vertexRoom);state.selected={type:'room',id:r.id};state.drag={type:'room-vertex',id:r.id,index:Number(vh.dataset.vertexIndex),start:model,original:deepClone(r.points),snapshot:deepClone(state.project)};return;}
   const roomEl=e.target.closest('[data-room-id]'); if(roomEl&&state.mode==='select'){e.stopPropagation();const r=state.project.rooms.find(x=>x.id===roomEl.dataset.roomId);state.selected={type:'room',id:r.id};state.drag={type:'room',id:r.id,start:model,original:deepClone(r.points),snapshot:deepClone(state.project)};render();return;}
@@ -301,11 +373,11 @@ app.addEventListener('pointerdown', e => {
   if(state.mode==='select'){state.selected=null;render();return;}
   if(state.mode==='polygon'){if(state.draftPoints.length>=3&&distance(model,state.draftPoints[0])<=state.gridSize*1.2)finishPolygon();else{state.draftPoints.push(model);render();}return;}
   if(state.mode==='rectangle'){state.rectStart=model;render();return;}
-  if(state.mode==='door'||state.mode==='sliding'||state.mode==='window'){const type=state.mode,width=type==='window'?state.windowPreset:state.doorPreset,el=element(type,model.x,model.y,width,0),label=type==='window'?'창문':type==='sliding'?'미닫이문':'여닫이문';commit(p=>({...p,elements:[...p.elements,el]}),`${label}을 추가했습니다.`);state.selected={type:'element',id:el.id};state.mode='select';render();}
+  if(state.mode==='door'||state.mode==='sliding'||state.mode==='window'){const hit=nearestWall(model);if(!hit){notify('문·창문은 벽 가까이를 클릭해주세요. 벽에 자동으로 스냅됩니다.','error');return;}const type=state.mode,width=type==='window'?state.windowPreset:state.doorPreset,el=element(type,hit.point.x,hit.point.y,width,wallAngle(hit.wall)),label=type==='window'?'창문':type==='sliding'?'미닫이문':'여닫이문';el.wallRef={key:hit.wall.key,t:hit.t};commit(p=>({...p,elements:[...p.elements,el]}),`${label}을 벽에 배치했습니다.`);state.selected={type:'element',id:el.id};state.mode='select';render();}
 });
 window.addEventListener('pointermove', e => {
   if(!document.querySelector('#drawing-svg')||(!state.drag&&!state.rectStart&&!state.draftPoints.length))return; const model=screenToModel(e);state.pointer=model;
-  if(state.drag){const d=state.drag,dx=model.x-d.start.x,dy=model.y-d.start.y;if(d.type==='room'){const r=state.project.rooms.find(x=>x.id===d.id);r.points=d.original.map(p=>({x:snap(p.x+dx,state.gridSize),y:snap(p.y+dy,state.gridSize)}));}else if(d.type==='room-vertex'){const r=state.project.rooms.find(x=>x.id===d.id);r.points=r.points.map((p,i)=>i===d.index?model:p);}else if(d.type==='boundary'){const item=state.project[d.kind];item.points=d.original.map(p=>({x:snap(p.x+dx,state.gridSize),y:snap(p.y+dy,state.gridSize)}));item.shape='custom';}else if(d.type==='boundary-vertex'){const item=state.project[d.kind];item.points=item.points.map((p,i)=>i===d.index?model:p);item.shape='custom';}else{const el=state.project.elements.find(x=>x.id===d.id);el.x=snap(d.original.x+dx,state.gridSize);el.y=snap(d.original.y+dy,state.gridSize);}persist();}
+  if(state.drag){const d=state.drag,dx=model.x-d.start.x,dy=model.y-d.start.y;if(d.type==='room'){const r=state.project.rooms.find(x=>x.id===d.id);r.points=d.original.map(p=>({x:snap(p.x+dx,state.gridSize),y:snap(p.y+dy,state.gridSize)}));}else if(d.type==='room-vertex'){const r=state.project.rooms.find(x=>x.id===d.id);r.points=r.points.map((p,i)=>i===d.index?model:p);}else if(d.type==='boundary'){const item=state.project[d.kind];item.points=d.original.map(p=>({x:snap(p.x+dx,state.gridSize),y:snap(p.y+dy,state.gridSize)}));item.shape='custom';}else if(d.type==='boundary-vertex'){const item=state.project[d.kind];item.points=item.points.map((p,i)=>i===d.index?model:p);item.shape='custom';}else{const el=state.project.elements.find(x=>x.id===d.id);const raw={x:snap(d.original.x+dx,state.gridSize),y:snap(d.original.y+dy,state.gridSize)},hit=nearestWall(raw);if(hit){el.x=hit.point.x;el.y=hit.point.y;el.rotation=wallAngle(hit.wall);el.wallRef={key:hit.wall.key,t:hit.t};}else{el.x=raw.x;el.y=raw.y;delete el.wallRef;}}persist();}
   render();
 });
 window.addEventListener('pointerup', e => {
@@ -313,17 +385,31 @@ window.addEventListener('pointerup', e => {
   if(state.drag){const invalidSite=state.project.site&&state.project.building&&!polygonContainsPolygon(state.project.site.points,state.project.building.points);const draggedRoom=state.drag.type==='room'||state.drag.type==='room-vertex'?state.project.rooms.find(r=>r.id===state.drag.id):null;const invalidRoom=draggedRoom&&state.project.building&&!polygonContainsPolygon(state.project.building.points,draggedRoom.points);if(invalidSite||invalidRoom){state.project=normalizeProject(state.drag.snapshot);state.frameDraft=deepClone(state.project.frameConfig);state.drag=null;persist();render();notify(invalidSite?'건물 외곽은 대지 안에 위치해야 합니다.':'실내 공간은 건물 외곽 안에 위치해야 합니다.','error');return;}state.history=[...state.history.slice(-39),state.drag.snapshot];state.future=[];state.drag=null;persist();render();}
 });
 app.addEventListener('dblclick', e => { if(e.target.closest('#drawing-svg')&&state.mode==='polygon')finishPolygon(); });
-window.addEventListener('keydown', e => {const tag=document.activeElement?.tagName?.toLowerCase(),editing=['input','textarea','select'].includes(tag);if((e.key==='Delete'||e.key==='Backspace')&&state.selected&&!editing){e.preventDefault();deleteSelected();}if(e.key==='Escape'){state.draftPoints=[];state.rectStart=null;state.mode='select';render();}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveNamed();}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'&&!e.shiftKey){e.preventDefault();undo();}if((e.ctrlKey||e.metaKey)&&(e.key.toLowerCase()==='y'||(e.shiftKey&&e.key.toLowerCase()==='z'))){e.preventDefault();redo();}});
+window.addEventListener('keydown', e => {const tag=document.activeElement?.tagName?.toLowerCase(),editing=['input','textarea','select'].includes(tag);if((e.key==='Delete'||e.key==='Backspace')&&state.selected&&!editing){e.preventDefault();deleteSelected();}if(e.key==='Escape'){state.draftPoints=[];state.rectStart=null;state.wallAnchor=null;state.mode='select';render();}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveNamed();}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'&&!e.shiftKey){e.preventDefault();undo();}if((e.ctrlKey||e.metaKey)&&(e.key.toLowerCase()==='y'||(e.shiftKey&&e.key.toLowerCase()==='z'))){e.preventDefault();redo();}});
 
 function validateFrame(prefix) { const cfg=state.frameDraft,w=cfg[`${prefix}Width`],d=cfg[`${prefix}Depth`],shape=cfg[`${prefix}Shape`]; if(!Number.isFinite(w)||!Number.isFinite(d)||w<=0||d<=0||w>500||d>500)return `${prefix==='site'?'대지':'건물'} 전체 가로·세로를 올바르게 입력해주세요.`; if(shape==='l'&&(!(cfg[`${prefix}CutWidth`]>0&&cfg[`${prefix}CutWidth`]<w)||!(cfg[`${prefix}CutDepth`]>0&&cfg[`${prefix}CutDepth`]<d)))return 'ㄱ자형의 파인 폭·깊이는 전체 규격보다 작아야 합니다.'; if(shape==='u'&&(!(cfg[`${prefix}NotchWidth`]>0&&cfg[`${prefix}NotchWidth`]<w)||!(cfg[`${prefix}NotchDepth`]>0&&cfg[`${prefix}NotchDepth`]<d)))return 'ㄷ자형의 중앙 홈 폭·깊이는 전체 규격보다 작아야 합니다.'; if(shape==='trapezoid'&&!(cfg[`${prefix}TopWidth`]>0&&cfg[`${prefix}TopWidth`]<=w))return '사다리꼴 윗변 폭은 전체 가로보다 작거나 같아야 합니다.'; return ''; }
 function applyFrame() { const cfg=deepClone(state.frameDraft),buildingErr=validateFrame('building'),siteErr=cfg.scope==='site-building'?validateFrame('site'):'';if(buildingErr||siteErr){notify(buildingErr||siteErr,'error');return;}const ox=cfg.scope==='site-building'?cfg.buildingOffsetX:0,oy=cfg.scope==='site-building'?cfg.buildingOffsetY:0;if(cfg.scope==='site-building'&&(!Number.isFinite(ox)||!Number.isFinite(oy))){notify('건물 위치 여백을 올바르게 입력해주세요.','error');return;}const nextSite=cfg.scope==='site-building'?boundary('대지 외곽',cfg.siteShape,shapePoints(cfg.siteShape,cfg,'site')):null;const nextBuilding=boundary('건물 외곽',cfg.buildingShape,shapePoints(cfg.buildingShape,cfg,'building',{x:ox,y:oy}));if(nextSite&&!polygonContainsPolygon(nextSite.points,nextBuilding.points)){notify('입력한 건물 외곽이 대지 경계를 벗어납니다. 건물 크기나 위치 여백을 조정해주세요.','error');return;}snapshot();state.project.scope=cfg.scope;state.project.frameConfig=deepClone(cfg);state.project.site=nextSite;state.project.building=nextBuilding;state.frameDraft=deepClone(cfg);state.selected={type:'boundary',kind:'building'};state.setupOpen=false;persist();fit();notify(cfg.scope==='site-building'?'대지·마당·건물 외부 틀을 생성했습니다.':'건물 외부 틀을 생성했습니다.'); }
 function addQuick() { const name=document.querySelector('#quick-name')?.value.trim()||'새 공간',w=toMeters(document.querySelector('#quick-width')?.value,state.unit),h=toMeters(document.querySelector('#quick-height')?.value,state.unit);if(!Number.isFinite(w)||!Number.isFinite(h)||w<=0||h<=0||w>200||h>200){notify('가로·세로 치수를 올바르게 입력해주세요.','error');return;}const base=state.project.building?.points||state.project.rooms.flatMap(r=>r.points),b=bounds(base),x=b.minX+.5,y=b.minY+.5,r={id:uid('room'),name,points:[{x,y},{x:x+w,y},{x:x+w,y:y+h},{x,y:y+h}]};if(state.project.building&&!polygonContainsPolygon(state.project.building.points,r.points)){notify('입력한 공간 크기가 건물 외곽을 벗어납니다. 더 작은 규격을 입력하거나 직접 위치를 그려주세요.','error');return;}commit(p=>({...p,rooms:[...p.rooms,r]}),'치수 입력 공간을 추가했습니다.');state.selected={type:'room',id:r.id};render(); }
+function addWallRoom(){
+  const wall=wallByKey(state.wallAnchor);if(!wall){notify('기준 벽을 먼저 선택해주세요.','error');return;}
+  const name=document.querySelector('#wall-room-name')?.value.trim()||'새 공간';
+  const lengthValue=toMeters(document.querySelector('#wall-room-length')?.value,state.unit),depthValue=toMeters(document.querySelector('#wall-room-depth')?.value,state.unit),offsetValue=toMeters(document.querySelector('#wall-room-offset')?.value,state.unit);
+  const side=document.querySelector('#wall-room-side')?.value||state.wallRoomSide||'auto';state.wallRoomSide=side;
+  if(!Number.isFinite(lengthValue)||!Number.isFinite(depthValue)||!Number.isFinite(offsetValue)||lengthValue<=0||depthValue<=0||offsetValue<0){notify('벽 기준 방 치수를 올바르게 입력해주세요.','error');return;}
+  if(lengthValue>wall.length+.0001||offsetValue+lengthValue>wall.length+.0001){notify(`선택 벽 길이(${formatLength(wall.length,state.unit,true)}) 안에서 시작 거리 + 방 길이를 지정해주세요.`,'error');return;}
+  let pts=side==='auto'?chooseAutoWallRoom(wall,lengthValue,depthValue,offsetValue):wallRoomCandidate(wall,lengthValue,depthValue,offsetValue,side);
+  if(!pts){notify('선택 벽의 어느 쪽으로도 입력 크기의 방을 건물 안에 만들 수 없습니다. 깊이나 길이를 줄여주세요.','error');return;}
+  if(state.project.building&&!polygonContainsPolygon(state.project.building.points,pts)){notify('생성되는 공간이 건물 외곽을 벗어납니다. 방향 또는 치수를 조정해주세요.','error');return;}
+  const r={id:uid('room'),name,points:pts,wallSource:{key:wall.key,offset:offsetValue,length:lengthValue,depth:depthValue,side}};
+  commit(p=>({...p,rooms:[...p.rooms,r]}),'선택한 벽을 기준으로 공간을 생성했습니다.');state.selected={type:'room',id:r.id};state.wallAnchor=null;state.mode='select';render();
+}
+
 function finishPolygon() { if(state.draftPoints.length<3)return;const r={id:uid('room'),name:`공간 ${state.project.rooms.length+1}`,points:deepClone(state.draftPoints)};state.draftPoints=[];if(state.project.building&&!polygonContainsPolygon(state.project.building.points,r.points)){state.mode='select';render();notify('실내 다각형은 건물 외곽 안에 그려주세요.','error');return;}commit(p=>({...p,rooms:[...p.rooms,r]}),'다각형 공간을 추가했습니다.');state.selected={type:'room',id:r.id};state.mode='select';render(); }
 function deleteSelected() { if(!state.selected)return;if(state.selected.type==='boundary'){notify('외부 틀은 삭제 대신 왼쪽 외곽 설정에서 다시 생성해주세요.','error');return;}const s=state.selected;commit(p=>s.type==='room'?({...p,rooms:p.rooms.filter(r=>r.id!==s.id)}):({...p,elements:p.elements.filter(el=>el.id!==s.id)}),s.type==='room'?'공간을 삭제했습니다.':'요소를 삭제했습니다.');state.selected=null;render(); }
 function undo() { if(!state.history.length)return;state.future=[deepClone(state.project),...state.future].slice(0,40);state.project=normalizeProject(state.history.pop());state.frameDraft=deepClone(state.project.frameConfig);state.selected=null;persist();render(); }
 function redo() { if(!state.future.length)return;state.history=[...state.history,deepClone(state.project)].slice(-40);state.project=normalizeProject(state.future.shift());state.frameDraft=deepClone(state.project.frameConfig);state.selected=null;persist();render(); }
 function allDrawingPoints() { return [state.project.site?.points,state.project.building?.points,...state.project.rooms.map(r=>r.points)].filter(Boolean).flat(); }
-function fit() { const all=allDrawingPoints();if(!all.length){state.zoom=1;render();return;}const b=bounds(all),fitValue=Math.min((CANVAS.width-220)/Math.max(b.width*CANVAS.pxPerMeter,1),(CANVAS.height-190)/Math.max(b.height*CANVAS.pxPerMeter,1));state.zoom=Math.min(1.7,Math.max(.25,fitValue));render(); }
+function fit() { const all=allDrawingPoints();if(!all.length){state.zoom=1;render();return;}const b=bounds(all),fitValue=Math.min((CANVAS.width-160)/Math.max(b.width*CANVAS.pxPerMeter,1),(CANVAS.height-150)/Math.max(b.height*CANVAS.pxPerMeter,1));state.zoom=Math.min(1.7,clampZoom(fitValue));render(); }
 function saveNamed() { const list=loadProjects(),snap={...deepClone(state.project),updatedAt:new Date().toISOString()};saveProjects([snap,...list.filter(x=>x.id!==snap.id)].slice(0,30));state.project=snap;persist();notify('브라우저에 도면을 저장했습니다.'); }
 function loadSavedProject(id) { const item=loadProjects().find(x=>x.id===id);if(!item)return;snapshot();state.project=normalizeProject(item);state.frameDraft=deepClone(state.project.frameConfig);state.selected=null;state.savedOpen=false;persist();fit();notify('저장된 도면을 불러왔습니다.'); }
 function deleteSavedProject(id) { saveProjects(loadProjects().filter(x=>x.id!==id));render(); }
